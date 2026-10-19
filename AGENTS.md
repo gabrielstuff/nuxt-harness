@@ -81,6 +81,12 @@ NUXT_HARNESS_BASE_URL=http://localhost:3000 \
 nuxt-harness assert --routes=/ --marker='Résultats' --allow-ci
 ```
 
+- **Use this command. Do not hand-roll browser automation** (CDP scripts, `--dump-dom` pipelines,
+  timing probes). It does the whole job in one command, and hand-rolled checks get the details wrong
+  (see §8).
+- **The marker must be content, not chrome.** Pass something the page can only render from its data —
+  a job title, a result count, an id. `--marker='Métiers ROME'` (the site title) is present in the
+  shell of every page, so the "server renders content" invariant passes vacuously.
 - Invariants, each exact: HTTP status · marker present in the server HTML · marker **still** present
   after hydration · zero console errors (opt-in, `assert.console: true`) · viewport overflow (only
   when a CDP-capable runner measured it — never invented).
@@ -105,6 +111,21 @@ Use [`examples/ci/nuxt-harness.yml`](examples/ci/nuxt-harness.yml) — copy it t
 
 Full explanation and the verified recipe: [`docs/ci.md`](docs/ci.md).
 
+## 5.1 Budget the loop
+
+Wall-clock and cost in an agent run are driven by the **number of turns**, not by the size of the app.
+A green gate plus one browser pass is proof; re-verifying the same thing is not.
+
+| do | do not |
+|---|---|
+| run `check:fast` after edits, `check` until it is green | re-run `check` again "to be sure" after it already passed |
+| one `assert` run per changed page | write your own CDP/Chrome script, or probe the same route five ways |
+| read `.harness/report.json` for the verdict | read the harness's rule sources to predict what it will say |
+| one prod build, curls, done | dev curls + prod curls + a second prod rebuild for the same facts |
+
+Measured on the ROME benchmark: the same brief, skills and gate cost **47 agent turns / $0.07** for one
+model and **277 turns / $5.52** for another. The difference was verification thrash, not the task.
+
 ## 6. Architecture in one table
 
 | file | layer | data access | stores | navigation |
@@ -114,6 +135,18 @@ Full explanation and the verified recipe: [`docs/ci.md`](docs/ci.md).
 | `app/components/**/Op*.vue` | Operator — wires Presenters | composables only | ✓ | ✓ |
 | `app/components/**/*.vue` | Presenter — props in, events out | ✕ | ✕ | ✕ |
 | `app/composables/use*.ts` | Composable — reusable logic | ✓ | ✓ | — |
+
+## 8. When you verify, verify the right signal
+
+Two mistakes to avoid, both observed in real runs:
+
+- **Content, not markup.** Counting `a[href="/metier/…"]` says "no results" when the app renders cards
+  that emit an event and let the parent navigate. Count data the page must render (ROME codes, titles,
+  a result count).
+- **Ignore comments when you grep a file.** A workflow that *documents* "runtime assertions are not
+  wired here" is not a workflow that runs them.
+- **Probe with valid shapes.** `/metier/ZZZZ` is malformed (400 is correct); a well-formed unknown code
+  such as `/metier/Z9999` is the 404 test.
 
 ## 7. Working on the harness itself
 
