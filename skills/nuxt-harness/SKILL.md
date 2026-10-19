@@ -8,6 +8,18 @@ description: Use when developing a Nuxt 4 / Vue 3 application guarded by @edumap
 Opinionated harness for Nuxt 4 / Vue 3: a strict 5-layer component architecture, enforced by
 ESLint rules and a deterministic quality gate.
 
+**Install and the exact command loop: [`AGENTS.md`](../../AGENTS.md). CI (verified recipe):
+[`docs/ci.md`](../../docs/ci.md) and [`examples/ci/nuxt-harness.yml`](../../examples/ci/nuxt-harness.yml).**
+
+Three rules the gate enforces that are easy to break by accident:
+
+- Never suppress a finding (`@ts-ignore`, blanket `eslint-disable`, updating a baseline to absorb a
+  new violation).
+- A skipped check is not a pass: the report carries `status: pass|fail|skip` + a `note` per check, and
+  a skipped required check fails the gate.
+- Runtime assertions (`nuxt-harness assert`) are local-only: they need a browser, they never run in
+  `fast`, and they refuse to run when `CI` is set unless `--allow-ci` is explicit.
+
 ## Core principle
 
 Build features by assembling simple, testable layers — never with monolithic smart components.

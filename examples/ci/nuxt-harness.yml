@@ -1,0 +1,95 @@
+# Quality gate for a Nuxt 4 app, run on GitHub Actions.
+# Copy to .github/workflows/nuxt-harness.yml and adjust the package manager if needed.
+#
+# Two details make it work in a runner: fetch-depth 0, and NUXT_HARNESS_BASE.
+# Without a base branch the gate selects 0 files and fails on purpose (harness/no-files):
+# a gate that reads nothing must not be green.
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    env:
+      # `fast` diffs against this ref. PRs: the target branch. Pushes: the default branch.
+      NUXT_HARNESS_BASE: origin/${{ github.base_ref || github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Required: `fast` needs the base branch to compute changed files.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # 1. Fast gate: static checks + harness ESLint rules on the files this branch changed (~1 s).
+      #    --allow-empty is deliberate here: a docs-only PR legitimately changes no app file.
+      - run: pnpm exec nuxt-harness fast --allow-empty
+
+      # 2. Full gate: every file + the app's own toolchain (nuxt typecheck, type-aware ESLint,
+      #    knip, cspell, jscpd, vitest + coverage) + CRAP <= 30 per .ts function.
+      - run: pnpm exec nuxt-harness full
+
+      # 3. Keep the report, even when the gate fails: it is the machine-readable record.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuxt-harness-report
+          path: |
+            .harness/report.json
+            nuxt-harness-baseline.json
+            eslint-suppressions.json
+          if-no-files-found: ignore
+
+  # OPTIONAL, opt-in: runtime assertions in CI.
+  # The check is local-only by design. Run it here only if you accept a browser dependency in CI.
+  # Enable with: Settings -> Variables -> RUN_RUNTIME_ASSERTIONS = true (and set ASSERT_ROUTES).
+  runtime-assertions:
+    if: vars.RUN_RUNTIME_ASSERTIONS == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec nuxt build
+
+      - name: Start the built app
+        run: |
+          PORT=3000 node .output/server/index.mjs &
+          npx --yes wait-on http://localhost:3000/
+
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+
+      - name: Assert the hydrated pages
+        env:
+          NUXT_HARNESS_BASE_URL: http://localhost:3000
+          NUXT_HARNESS_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        # --allow-ci is the explicit opt-in: without it the check refuses to run in CI.
+        run: pnpm exec nuxt-harness assert --allow-ci --routes="${{ vars.ASSERT_ROUTES }}" --expect-404="${{ vars.ASSERT_404_ROUTES }}"
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuxt-harness-assert-report
+          path: .harness/report.json
+          if-no-files-found: ignore

@@ -26,6 +26,27 @@ Every finding explains itself: `❌ what → 💡 why → 🛠 fix → 📖 doc`
       🛠 Replace with: emit('select', item)
 ```
 
+## This fork (`gabrielstuff/nuxt-harness`, branch `agent-hardening`)
+
+Adds, on top of v0.6.0:
+
+- **SSR-determinism rules**: `no-reserved-item-value` (the empty-string value a Reka-based select
+  reserves — it throws while hydrating, invisible to typecheck and curl), `no-nondeterministic-key`,
+  `use-fetch-needs-key`, `no-locale-format-in-render`, `no-browser-api-in-setup`,
+  `no-module-mutable-state`, `timer-needs-scope-dispose`.
+- **Runtime assertions** (`nuxt-harness assert`): opens the built app in a browser and asserts five
+  invariants. **Local-only**: not in `fast`, not in `full` without `--with-assert`, and it refuses to
+  run when `CI` is set unless `--allow-ci`.
+- **An honest empty run**: selecting 0 files fails (`harness/no-files`) instead of reporting success,
+  and `--all` walks the filesystem when there is no git repository.
+
+```bash
+pnpm add -D github:gabrielstuff/nuxt-harness#agent-hardening
+```
+
+Agents: start at [`AGENTS.md`](AGENTS.md). CI: [`docs/ci.md`](docs/ci.md) and
+[`examples/ci/nuxt-harness.yml`](examples/ci/nuxt-harness.yml).
+
 ## Quick start
 
 Try it on any Nuxt 4 repository, with nothing installed:
