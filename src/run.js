@@ -8,13 +8,19 @@
  *           type-aware ESLint, knip, cspell, jscpd, vitest + CRAP). Needs the app installed.
  *   hook  — Claude Code PostToolUse adapter: reads the hook JSON on stdin, runs `fast`
  *           on the edited file, exits 2 with findings on stderr so the agent sees them.
+ *   assert— LOCAL ONLY: opens each configured route in a pinned browser and asserts five
+ *           invariants (status, server marker, marker after hydration, console, geometry).
+ *           Never runs in `fast`, not in `full` without --with-assert, and refuses to run
+ *           when `CI` is set unless --allow-ci is explicit.
  *   stop  — Claude Code Stop adapter: runs `fast` on every file changed on the branch
  *           (Bash edits included) and blocks the end of the turn while errors remain.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 
+import { applyRequired, assertDecision, assertOptions, ASSERT_NAME, evaluateRoute, findChrome, parseList, resolveAssertInputs } from './assert.js'
 import { STATIC_CHECKS } from './checks.js'
 import { loadConfig, resolveOptions, sourcePattern } from './config.js'
 import { applyBaseline, baselineFrom, crapFindings } from './crap.js'
@@ -89,6 +95,56 @@ function changedFiles(root, scope) {
     git(root, ['ls-files', '--others', '--exclude-standard'])
   ]
   return inScope(lists.join('\n').split('\n'), scope).filter(f => existsSync(join(root, f)))
+}
+
+
+// ─── Runtime assertions (local-only) ────────────────────────────────────────
+/** @param {string} url */
+async function fetchRoute (url) {
+  try {
+    const response = await fetch(url, { redirect: 'manual' })
+    return { status: response.status, body: await response.text() }
+  } catch {
+    return { status: 0, body: '' }
+  }
+}
+
+/**
+ * Open each route in a pinned browser and compare the server response with the hydrated DOM.
+ * Geometry (mobile overflow) is only asserted when a CDP-capable runner supplies it: inventing a
+ * value here would be a fake signal, so it stays undefined and the invariant is skipped.
+ * @param {string[]} routes @param {string[]} expect404 @param {string} base
+ * @param {import('./config.js').ResolvedOptions} options @param {string} chrome
+ */
+async function assertionFindings (routes, expect404, base, resolved, chrome) {
+  const { marker, width, height, console: withConsole } = resolved
+  /** @type {import('./checks.js').Finding[]} */
+  const findings = []
+  for (const route of routes) {
+    const url = `${base}${route}`
+    const profile = mkdtempSync(join(tmpdir(), 'nuxt-harness-assert-'))
+    const dumped = spawnSync(chrome, [
+      '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+      `--user-data-dir=${profile}`, `--window-size=${width},${height}`,
+      '--virtual-time-budget=8000', '--dump-dom', url
+    ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    rmSync(profile, { recursive: true, force: true })
+
+    const { status, body } = await fetchRoute(url)
+    findings.push(...evaluateRoute({
+      route,
+      expectedStatus: expect404.includes(route) ? 404 : 200,
+      status,
+      ssrHtml: body,
+      domHtml: dumped.stdout ?? '',
+      consoleErrors: withConsole
+        ? (dumped.stderr ?? '').split('\n').filter(line => /ERROR:CONSOLE|Uncaught|\[Vue warn\]/.test(line)).map(line => line.trim())
+        : [],
+      marker,
+      console: withConsole
+    }))
+  }
+  return findings
 }
 
 // ─── Check runners ──────────────────────────────────────────────────────────
@@ -266,20 +322,24 @@ const toRelative = (root, p) => isAbsolute(p) ? relative(root, p) : relative(roo
 
 /**
  * @param {'fast' | 'full'} mode
- * @param {{ root: string, files?: string[], all?: boolean, updateBaseline?: boolean, config?: import('./config.js').HarnessOptions, allowEmpty?: boolean }} options
+ * @param {{ root: string, files?: string[], all?: boolean, updateBaseline?: boolean, config?: import('./config.js').HarnessOptions, allowEmpty?: boolean, withAssert?: boolean, allowCi?: boolean, require?: string[], routes?: string[], expect404?: string[], marker?: string }} options
  */
-export async function runGate(mode, { root, files, all, updateBaseline, config, allowEmpty }) {
+export async function runGate(mode, { root, files, all, updateBaseline, config, allowEmpty, withAssert, allowCi, require, routes: routeArgs, expect404: expect404Args, marker: markerArg }) {
   const start = performance.now()
   const options = { ...(config ?? await loadConfig(root)), root }
   const { srcDir } = resolveOptions(options)
   const scope = sourcePattern(srcDir)
-  const selected = mode === 'full' || all
-    ? allFiles(root, scope)
-    : files?.length ? inScope(files.map(f => toRelative(root, f)), scope) : changedFiles(root, scope)
+  // `assert` is a runtime-only mode: it opens routes, so file selection does not apply to it.
+  const staticMode = mode === 'fast' || mode === 'full'
+  const selected = !staticMode
+    ? []
+    : mode === 'full' || all
+      ? allFiles(root, scope)
+      : files?.length ? inScope(files.map(f => toRelative(root, f)), scope) : changedFiles(root, scope)
 
   // An empty file set is not a pass: reporting success after reading nothing is how a green gate
   // hides a broken app. Say so, and let the caller opt in explicitly with --allow-empty.
-  if (selected.length === 0 && !allowEmpty) {
+  if (staticMode && selected.length === 0 && !allowEmpty) {
     return {
       tool: '@edumapper/nuxt-harness',
       version: VERSION,
@@ -312,13 +372,42 @@ export async function runGate(mode, { root, files, all, updateBaseline, config, 
   }
 
   /** @type {CheckReport[]} */
-  let checks = await fastChecks(root, selected, options)
+  let checks = staticMode ? await fastChecks(root, selected, options) : []
   if (mode === 'full') {
     const tools = await Promise.all(toolSteps(srcDir).map(step => runTool(root, step)))
     // CRAP joins complexity with the coverage the vitest step just wrote.
     const crapCheck = await timed(CRAP_CHECK, () => crapFindings(root, selected, options))
     checks = [...checks, ...tools, crapCheck]
   }
+
+  // Runtime assertions: local-only by design. `fast` never pays for a browser; `full` records a
+  // visible skip so a CI reader can see the check exists and did not run.
+  if (mode === 'assert' || (mode === 'full' && withAssert)) {
+    const resolved = resolveAssertInputs(options, { routes: routeArgs, expect404: expect404Args, marker: markerArg })
+    const { routes, expect404 } = resolved
+    const chrome = findChrome(assertOptions(options).chrome)
+    const decision = assertDecision({ requested: true, inCi: Boolean(process.env.CI), allowCi: Boolean(allowCi), chrome, routes })
+    if (decision.run) {
+      const assertStart = performance.now()
+      const assertFindings = await assertionFindings(
+        routes, expect404,
+        process.env.NUXT_HARNESS_BASE_URL ?? 'http://localhost:3000',
+        resolved, /** @type {string} */ (chrome)
+      )
+      checks = [...checks, {
+        name: ASSERT_NAME,
+        status: assertFindings.some(f => f.severity === 'error') ? 'fail' : 'pass',
+        durationMs: Math.round(performance.now() - assertStart),
+        findings: assertFindings
+      }]
+    } else {
+      checks = [...checks, { name: ASSERT_NAME, status: 'skip', note: decision.note, durationMs: 0, findings: [] }]
+    }
+  } else if (mode === 'full') {
+    checks = [...checks, { name: ASSERT_NAME, status: 'skip', note: 'local-only: pass --with-assert to run it here', durationMs: 0, findings: [] }]
+  }
+
+  checks = applyRequired(checks, require ?? [])
 
   // Only the full gate sees every file, so only it may rewrite the baseline.
   let baseline = readBaseline(root)
@@ -335,6 +424,7 @@ export async function runGate(mode, { root, files, all, updateBaseline, config, 
     mode,
     root,
     files: selected.length,
+    ...(mode === 'assert' ? { routes: routeArgs?.length ?? 0 } : {}),
     durationMs: Math.round(performance.now() - start),
     passed: errors === 0,
     errors,
@@ -346,30 +436,42 @@ export async function runGate(mode, { root, files, all, updateBaseline, config, 
 /** @param {string[]} argv */
 export async function main(argv) {
   const [command = 'fast', ...rest] = argv
+  const value = (flag) => { const hit = rest.find(a => a.startsWith(`${flag}=`)); return hit ? hit.slice(flag.length + 1) : undefined }
   const json = rest.includes('--json')
   const all = rest.includes('--all')
   const updateBaseline = rest.includes('--update-baseline')
   const allowEmpty = rest.includes('--allow-empty')
+  const withAssert = rest.includes('--with-assert')
+  const allowCi = rest.includes('--allow-ci')
+  const require = parseList(value('--require'))
+  const routes = parseList(value('--routes'))
+  const expect404 = parseList(value('--expect-404'))
+  const marker = value('--marker')
   const files = rest.filter(a => !a.startsWith('--'))
 
   if (command === 'hook') return hook()
   if (command === 'stop') return stop()
-  if (command !== 'fast' && command !== 'full') {
+  if (command !== 'fast' && command !== 'full' && command !== 'assert') {
     process.stderr.write('usage: nuxt-harness <fast [files…] [--all] | full [--update-baseline] | hook | stop> [--json]\n')
     return 64
   }
 
   const root = projectRoot(process.cwd())
-  const report = await runGate(command, { root, files, all, updateBaseline, allowEmpty })
+  const report = await runGate(command, { root, files, all, updateBaseline, allowEmpty, withAssert, allowCi, require, routes, expect404, marker })
   writeReport(root, report)
 
   if (json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
   } else {
     const out = (/** @type {string} */ s) => process.stdout.write(`${s}\n`)
-    out(`\n  ${bold(`@edumapper/nuxt-harness ${VERSION}`)} ${dim(`— ${command} gate, ${report.files} files`)}\n`)
+    const scope = command === 'assert' ? `${report.routes ?? 0} routes` : `${report.files} files`
+    out(`\n  ${bold(`@edumapper/nuxt-harness ${VERSION}`)} ${dim(`— ${command} gate, ${scope}`)}\n`)
     printHuman(report.checks, out)
-    out(`\n  ${report.passed ? green(bold('✓ passed')) : red(bold(`✗ ${report.errors} errors`))}${report.warnings ? yellow(`  ⚠ ${report.warnings} warnings`) : ''} ${dim(`in ${report.durationMs}ms · .harness/report.json`)}\n`)
+    const verdict = report.passed
+      ? green(bold('✓ passed'))
+      : report.errors > 0 ? red(bold(`✗ ${report.errors} errors`)) : red(bold('✗ failed'))
+    const skipped = report.checks.filter(c => c.status === 'skip').length
+    out(`\n  ${verdict}${report.warnings ? yellow(`  ⚠ ${report.warnings} warnings`) : ''}${skipped ? dim(`  ${skipped} skipped`) : ''} ${dim(`in ${report.durationMs}ms · .harness/report.json`)}\n`)
   }
   return report.passed ? 0 : 1
 }

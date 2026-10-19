@@ -27,6 +27,19 @@ import { pathToFileURL } from 'node:url'
  * @property {string[]} [bodyReaders] The app's own request-body readers (e.g. a size-capped `readJsonBody`), checked like `readBody`.
  * @property {string[]} [allowServerImportsInApp] `~~/server/…` globs that `app/` may import (e.g. shared validators).
  * @property {false | DesignSystemOptions} [designSystem] Opt-in design-system rules. Default `false`.
+ * @property {AssertOptions} [assert] Local-only runtime assertions (opens a browser). Never runs in CI unless `--allow-ci`.
+ */
+
+/**
+ * @typedef {object} AssertOptions
+ * @property {string[]} [routes] Routes to open, e.g. `['/', '/?q=x']`.
+ * @property {string[]} [expect404] Routes that must answer 404 (soft-404 detector).
+ * @property {string} [marker] Text the page must contain in the server HTML and after hydration.
+ * @property {number} [width] Viewport width. Default 390.
+ * @property {number} [height] Viewport height. Default 844.
+ * @property {boolean} [console] Also assert zero console errors. Default false (Chrome build dependent).
+ * @property {string} [chrome] Chrome binary. Defaults to `NUXT_HARNESS_CHROME`.
+ * @property {boolean} [required] Fail the gate when the check cannot run. Default false.
  */
 
 export const DEFAULT_AUTH_COMPOSABLES = ['useUserSession', 'useAuth', 'useSupabaseUser', 'useSupabaseSession']
@@ -96,6 +109,16 @@ export function resolveOptions(options = {}) {
     dataComposables: options.dataComposables ?? [],
     bodyReaders: options.bodyReaders ?? [],
     allowServerImportsInApp: options.allowServerImportsInApp ?? [],
+    assert: {
+      routes: options.assert?.routes ?? [],
+      expect404: options.assert?.expect404 ?? [],
+      marker: options.assert?.marker ?? '',
+      width: options.assert?.width ?? 390,
+      height: options.assert?.height ?? 844,
+      console: options.assert?.console ?? false,
+      chrome: options.assert?.chrome ?? '',
+      required: options.assert?.required ?? false
+    },
     designSystem: ds
       ? {
           palettes: ds.palettes,
