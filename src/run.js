@@ -12,7 +12,7 @@
  *           (Bash edits included) and blocks the end of the turn while errors remain.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 
 import { STATIC_CHECKS } from './checks.js'
@@ -45,9 +45,35 @@ function git(cwd, args) {
 /** @param {string[]} files @param {RegExp} scope */
 const inScope = (files, scope) => [...new Set(files)].filter(f => scope.test(f) && !f.endsWith('.d.ts'))
 
-/** @param {string} root @param {RegExp} scope */
+/**
+ * Every file in scope. Prefers `git ls-files` (fast, honours .gitignore) and falls back to a
+ * directory walk, so `--all` still means "all" outside a repository - otherwise the gate would
+ * read nothing and report success.
+ * @param {string} root @param {RegExp} scope
+ */
 function allFiles(root, scope) {
-  return inScope((git(root, ['ls-files', '-co', '--exclude-standard']) ?? '').split('\n'), scope)
+  const tracked = git(root, ['ls-files', '-co', '--exclude-standard'])
+  if (tracked !== undefined) return inScope(tracked.split('\n'), scope)
+
+  const SKIP = new Set(['node_modules', '.git', '.nuxt', '.output', '.harness', 'dist', '.data', 'coverage'])
+  /** @type {string[]} */
+  const found = []
+  /** @param {string} dir */
+  const walk = (dir) => {
+    for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+      if (entry.name.startsWith('.') && entry.name !== '.') continue
+      if (SKIP.has(entry.name)) continue
+      const rel = dir === '.' ? entry.name : `${dir}/${entry.name}`
+      if (entry.isDirectory()) walk(rel)
+      else found.push(rel)
+    }
+  }
+  try {
+    walk('.')
+  } catch {
+    return []
+  }
+  return inScope(found, scope)
 }
 
 /**
@@ -240,9 +266,9 @@ const toRelative = (root, p) => isAbsolute(p) ? relative(root, p) : relative(roo
 
 /**
  * @param {'fast' | 'full'} mode
- * @param {{ root: string, files?: string[], all?: boolean, updateBaseline?: boolean, config?: import('./config.js').HarnessOptions }} options
+ * @param {{ root: string, files?: string[], all?: boolean, updateBaseline?: boolean, config?: import('./config.js').HarnessOptions, allowEmpty?: boolean }} options
  */
-export async function runGate(mode, { root, files, all, updateBaseline, config }) {
+export async function runGate(mode, { root, files, all, updateBaseline, config, allowEmpty }) {
   const start = performance.now()
   const options = { ...(config ?? await loadConfig(root)), root }
   const { srcDir } = resolveOptions(options)
@@ -250,6 +276,40 @@ export async function runGate(mode, { root, files, all, updateBaseline, config }
   const selected = mode === 'full' || all
     ? allFiles(root, scope)
     : files?.length ? inScope(files.map(f => toRelative(root, f)), scope) : changedFiles(root, scope)
+
+  // An empty file set is not a pass: reporting success after reading nothing is how a green gate
+  // hides a broken app. Say so, and let the caller opt in explicitly with --allow-empty.
+  if (selected.length === 0 && !allowEmpty) {
+    return {
+      tool: '@edumapper/nuxt-harness',
+      version: VERSION,
+      mode,
+      root,
+      files: 0,
+      durationMs: Math.round(performance.now() - start),
+      passed: false,
+      skipped: true,
+      errors: 0,
+      warnings: 0,
+      checks: [{
+        name: 'File selection',
+        status: 'fail',
+        durationMs: 0,
+        findings: [{
+          file: '.',
+          line: 1,
+          rule: 'harness/no-files',
+          severity: 'error',
+          message: [
+            '❌ nothing to check — 0 files selected',
+            '💡 A gate that reads no file cannot pass one. This happens outside a git repository when no file argument is given (the default is "changed files").',
+            '🛠 Pass files: `nuxt-harness fast app/pages/index.vue`, or use `--all`. In CI with changesets that can legitimately be empty, pass `--allow-empty`.',
+            '📖 https://github.com/edumapper/nuxt-harness/blob/main/skills/nuxt-harness/references/configuration.md'
+          ].join('\n')
+        }]
+      }]
+    }
+  }
 
   /** @type {CheckReport[]} */
   let checks = await fastChecks(root, selected, options)
@@ -289,6 +349,7 @@ export async function main(argv) {
   const json = rest.includes('--json')
   const all = rest.includes('--all')
   const updateBaseline = rest.includes('--update-baseline')
+  const allowEmpty = rest.includes('--allow-empty')
   const files = rest.filter(a => !a.startsWith('--'))
 
   if (command === 'hook') return hook()
@@ -299,7 +360,7 @@ export async function main(argv) {
   }
 
   const root = projectRoot(process.cwd())
-  const report = await runGate(command, { root, files, all, updateBaseline })
+  const report = await runGate(command, { root, files, all, updateBaseline, allowEmpty })
   writeReport(root, report)
 
   if (json) {

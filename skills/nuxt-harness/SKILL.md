@@ -77,6 +77,7 @@ below the recorded count; one more violation and all of them report. These files
 | Illegal states | `arch/max-boolean-props`, `switch-exhaustiveness-check`, `no-unnecessary-condition` (type-aware) |
 | Guards | `arch/max-condition-operands` (max 2 in `if`/`v-if`/`v-show`), `no-else-return`, `max-depth: 2`, auth gates only in middleware |
 | Reactivity & SSR | `arch/max-watchers` (≤ 3 per file), no `provide`/`inject`, `navigateTo` awaited or returned, `<ClientOnly>` preceded by a reason |
+| SSR determinism (invisible to typecheck and curl) | `arch/no-reserved-item-value` (reserved `''` in select items), `arch/no-nondeterministic-key`, `arch/use-fetch-needs-key`, `arch/no-locale-format-in-render`, `arch/no-browser-api-in-setup`, `arch/no-module-mutable-state`, `arch/timer-needs-scope-dispose` |
 | Locality | R0–R4 layer rules, import boundaries (`app` ↛ `server`, `server` ↛ `app`, `shared` ↛ both), no event bus |
 | CRAP | `complexity` ≤ 20; CRAP = c² × (1 − cov)³ + c ≤ 30 per `.ts` function (full gate) |
 | Design system (opt-in) | hardcoded colors, palettes the app allows, nested bordered boxes |

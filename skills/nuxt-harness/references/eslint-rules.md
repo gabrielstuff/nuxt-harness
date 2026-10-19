@@ -81,6 +81,22 @@ Principle: use early returns for states that really happen. Don't check states t
 | `max-params: 4` | the cheapest SRP smell to detect (off in tests) |
 | `arch/no-figma-asset-url` | expiring Figma MCP asset URLs (`figma.com/api/mcp/asset/…`, `localhost:3845/assets/…`) ship as broken images |
 
+## SSR determinism
+
+What the server renders must be what the client renders, and what the client fetches must be
+findable in the payload. These rules catch the classes that SSR HTML, `curl` and `nuxt typecheck`
+cannot see - the page returns 200 with correct HTML and breaks in a browser.
+
+| Rule | Files | Forbids |
+|---|---|---|
+| `arch/no-reserved-item-value` <a id="no-reserved-item-value"></a> | `app/**` | a script-level item object with `value: ''`. Select-like components (Reka UI: `USelect`, `USelectMenu`, `UInputMenu`) reserve the empty string for "clear selection" and throw while *rendering* that item, so hydration replaces the page with the error page. Use a sentinel (`const ALL = 'all'`) and map it to `undefined` at the query/URL boundary. Template literals are exempt: `<option value="">` is valid. |
+| `arch/no-nondeterministic-key` <a id="no-nondeterministic-key"></a> | `app/**`, `server/**` | a request key built from `Date.now()`, `new Date().getTime()`, `Math.random()`, `performance.now()`, `crypto.randomUUID()` - in `key:` or as the first argument of `useAsyncData`. Node and the browser compute different values, the client misses the payload entry and refetches (content flashes out and back). |
+| `arch/use-fetch-needs-key` <a id="use-fetch-needs-key"></a> | `app/**` | `useFetch` / `useAsyncData` with `query` or `params` and no `key` (warn). Without a key the payload entry is identified by call order, so two callers with different filters collide. |
+| `arch/no-locale-format-in-render` <a id="no-locale-format-in-render"></a> | `app/**` | `toLocaleString` / `toLocaleDateString` / `toLocaleTimeString` / `Intl.*` in a template expression or a top-level setup statement (calls inside functions are client-only and exempt). Node and the browser ship different ICU data, so grouping, month names and time zones can differ between the two renders - and production Vue does not warn about a hydrated text mismatch. |
+| `arch/no-browser-api-in-setup` <a id="no-browser-api-in-setup"></a> | `app/**`, `server/**` | `window` / `document` / `localStorage` / `sessionStorage` / `navigator` read at the top level of setup, outside a function and outside an `import.meta.client` guard. Move the work into `onMounted`, guard the branch, or use `<ClientOnly>` with a reason. |
+| `arch/no-module-mutable-state` <a id="no-module-mutable-state"></a> | `app/**`, `server/**` (`.ts` modules; SFC setup bodies are per instance and exempt) | a module-scope `ref` / `reactive` / `shallowRef` / `computed`, or a module-scope `let` assigned in two or more places. A module is one instance per server process, so this is cross-request state: use `useState`, `useCookie`, route state, or scope a shared instance per Nuxt app. A cache assigned exactly once from an immutable source is fine. |
+| `arch/timer-needs-scope-dispose` <a id="timer-needs-scope-dispose"></a> | `app/**` | `setTimeout` / `setInterval` / `addEventListener` in a file with no `tryOnScopeDispose` / `onScopeDispose` / `onUnmounted` / VueUse helper (warn). Prefer `useDebounceFn`, `useEventListener`, `useTimeoutFn`, `useIntervalFn` - they cancel on scope dispose. |
+
 ## Design system (opt-in)
 
 Off by default — the harness ships no design tokens. Enable with `designSystem` in

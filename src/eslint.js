@@ -29,6 +29,13 @@ import noPresenterInPage from './rules/no-presenter-in-page.js'
 import noProvideInject from './rules/no-provide-inject.js'
 import noReverseLayerImport from './rules/no-reverse-layer-import.js'
 import noServerUiImport from './rules/no-server-ui-import.js'
+import noBrowserApiInSetup from './rules/no-browser-api-in-setup.js'
+import noLocaleFormatInRender from './rules/no-locale-format-in-render.js'
+import noModuleMutableState from './rules/no-module-mutable-state.js'
+import noNondeterministicKey from './rules/no-nondeterministic-key.js'
+import noReservedItemValue from './rules/no-reserved-item-value.js'
+import timerNeedsScopeDispose from './rules/timer-needs-scope-dispose.js'
+import useFetchNeedsKey from './rules/use-fetch-needs-key.js'
 import noSmartCallsInPresenter from './rules/no-smart-calls-in-presenter.js'
 
 // ESLint flat config requires plugin objects to be referentially identical
@@ -52,7 +59,14 @@ export const arch = {
     'no-provide-inject': noProvideInject,
     'no-smart-calls': noSmartCallsInPresenter,
     'no-server-ui-import': noServerUiImport,
-    'no-reverse-layer': noReverseLayerImport
+    'no-reverse-layer': noReverseLayerImport,
+    'no-reserved-item-value': noReservedItemValue,
+    'no-nondeterministic-key': noNondeterministicKey,
+    'use-fetch-needs-key': useFetchNeedsKey,
+    'no-locale-format-in-render': noLocaleFormatInRender,
+    'no-browser-api-in-setup': noBrowserApiInSetup,
+    'timer-needs-scope-dispose': timerNeedsScopeDispose,
+    'no-module-mutable-state': noModuleMutableState
   }
 }
 
@@ -218,6 +232,28 @@ export function harness(options) {
       name: 'nuxt-harness/illegal-states',
       files: components,
       rules: { 'arch/max-boolean-props': 'error' }
+    },
+
+    // ── SSR determinism: what a static gate can still decide ─────────────────
+    {
+      name: 'nuxt-harness/ssr-determinism',
+      files: [...appCode, ...server, ...shared, ...rootGlobs('modules', '**/*.{vue,ts,js}')],
+      rules: {
+        // The empty string is reserved by select-like components; it throws while hydrating.
+        'arch/no-reserved-item-value': 'error',
+        // A key the client cannot reproduce misses the payload cache and refetches.
+        'arch/no-nondeterministic-key': 'error',
+        // Locale formatting differs between Node and the browser inside the render path.
+        'arch/no-locale-format-in-render': 'error',
+        // Setup runs on the server: a top-level browser read throws or mismatches.
+        'arch/no-browser-api-in-setup': 'error',
+        // Request data must not live in module scope (one instance per process).
+        'arch/no-module-mutable-state': 'error',
+        // Parameterised requests need a key so hydration replays the right entry.
+        'arch/use-fetch-needs-key': 'warn',
+        // A timer without scope-aware cleanup outlives the component.
+        'arch/timer-needs-scope-dispose': 'warn'
+      }
     },
 
     // ── Design system: opt-in, configured by the app ─────────────────────────
