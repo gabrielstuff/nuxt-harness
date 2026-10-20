@@ -3,12 +3,14 @@
  * ESLint Rule: no-module-mutable-state
  *
  * Flags module-scope shared state in `app/composables` and `server`:
- *   - a reactive singleton (`ref` / `reactive` / `shallowRef` / `computed` at module scope);
+ *   - a reactive singleton (`ref` / `reactive` / `shallowRef` / `shallowReactive` at module scope);
  *   - a module-scope `let` that is assigned in more than one place.
  *
  * Under SSR a module is one instance for the whole process, so a reactive singleton is
  * cross-request state: whatever request N+1 reads is what request N wrote. A value derived
- * once from a file and never reassigned is fine - that is an immutable cache.
+ * once from a file and never reassigned is fine - that is an immutable cache. A module-scope
+ * `computed` holds no state of its own: it derives from a source that is reported instead, so one
+ * singleton is one finding.
  *
  * SFC files are skipped: the top level of <script setup> is setup scope (one per instance),
  * which is exactly where component state belongs. This rule targets `app/composables`,
@@ -17,7 +19,7 @@
 
 import { docsUrl } from './docs.js'
 
-const REACTIVE = new Set(['ref', 'reactive', 'shallowRef', 'shallowReactive', 'computed'])
+const REACTIVE = new Set(['ref', 'reactive', 'shallowRef', 'shallowReactive'])
 
 /** @type {import('eslint').Rule.RuleModule} */
 export default {

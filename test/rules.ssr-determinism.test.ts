@@ -104,11 +104,19 @@ ruleTester.run('timer-needs-scope-dispose', timerNeedsScopeDispose, {
   valid: [
     { filename: 'app/composables/usePoll.ts', code: 'const id = setInterval(tick, 1000); tryOnScopeDispose(() => clearInterval(id))' },
     { filename: 'app/composables/useSearch.ts', code: 'const run = useDebounceFn(search, 120)' },
-    { filename: 'app/composables/useSearch.ts', code: 'useEventListener(window, \'resize\', onResize)' }
+    { filename: 'app/composables/useSearch.ts', code: 'useEventListener(window, \'resize\', onResize)' },
+    // a one-shot listener removes itself on the first event
+    { filename: 'app/components/Pill.vue', code: 'function press (btn) { btn.addEventListener(\'animationend\', reset, { once: true }) }' },
+    // a timer cleared in the same function's finally cannot outlive the call (request timeout)
+    { filename: 'app/composables/useUpload.ts', code: 'async function del () { const timer = setTimeout(() => c.abort(), 10000); try { await go() } finally { clearTimeout(timer) } }' }
   ],
   invalid: [
     { filename: 'app/composables/usePoll.ts', code: 'const id = setInterval(tick, 1000)', errors: 1 },
-    { filename: 'app/pages/index.vue', code: 'let t; watch(q, () => { clearTimeout(t); t = setTimeout(run, 120) })', errors: 1 }
+    // clearing the previous handle is a debounce, not a cleanup: the last timer outlives the component
+    { filename: 'app/pages/index.vue', code: 'let t; watch(q, () => { clearTimeout(t); t = setTimeout(run, 120) })', errors: 1 },
+    // a finally in another function does not bound this timer
+    { filename: 'app/composables/useUpload.ts', code: 'function start () { const timer = setTimeout(run, 10) }\nfunction stop () { try { x() } finally { clearTimeout(timer) } }', errors: 1 },
+    { filename: 'app/components/Flash.vue', code: 'el.addEventListener(\'click\', onClick, { once: false })', errors: 1 }
   ]
 })
 
@@ -120,6 +128,8 @@ ruleTester.run('no-module-mutable-state', noModuleMutableState, {
   ],
   invalid: [
     { filename: 'app/composables/useFilters.ts', code: 'export const filters = ref({ q: \'\' })', errors: 1 },
+    // a computed derives from the singleton: one singleton, one finding
+    { filename: 'app/composables/useRuns.ts', code: 'const runs = ref([])\nconst active = computed(() => runs.value.filter(Boolean))\nconst busy = computed(() => active.value.length > 0)', errors: 1 },
     { filename: 'server/utils/session.ts', code: 'let user = null\nfunction setUser (u) { user = u }\nfunction clear () { user = null }', errors: 1 }
   ]
 })

@@ -39,6 +39,7 @@ Keep the config file free of runtime imports from the harness: `fast` can run th
 | `dataComposables` | `[]` | Your own data-layer composables (`useApiQuery`, …). Presenters may not call them, like `useFetch`. |
 | `bodyReaders` | `[]` | Your own request-body readers (e.g. a size-capped `readJsonBody`). Their result must be `.parse()`d, like `readBody`. |
 | `allowServerImportsInApp` | `[]` | `~~/server/…` globs that `app/` may import, e.g. `['~~/server/utils/validators/**']`. Prefer moving such code to `shared/`. |
+| `clientSingletons` | `[]` | Root-relative globs of modules that deliberately hold one browser-side instance for the app's lifetime, e.g. `['app/composables/useIsMobile.ts']`. Exempt from `no-module-mutable-state` and `timer-needs-scope-dispose`. Only list a module whose state is written exclusively in the browser (in `onMounted`, an event handler, or under `import.meta.client`), and say why next to the entry. |
 | `designSystem` | `false` | Opt-in design-system rules. See below. |
 
 ## Design system
