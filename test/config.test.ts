@@ -95,3 +95,38 @@ describe('typeAware — runs with type information', () => {
     expect(result?.messages.map(m => m.ruleId)).toEqual(['@typescript-eslint/switch-exhaustiveness-check'])
   })
 })
+
+// The SSR rules gate the render path. Tests, server code, plugins and declared client singletons
+// are scoped out explicitly, each for its own reason: one finding should mean one real risk.
+describe('SSR rules — scoped to the render path', () => {
+  const lint = async (cwd: string, filePath: string, code: string, options = {}) => {
+    const eslint = new ESLint({ cwd, overrideConfigFile: true, overrideConfig: await standalone({ root: cwd, ...options }) })
+    const [result] = await eslint.lintText(code, { filePath: join(cwd, filePath) })
+    return (result?.messages ?? []).map(m => m.ruleId).filter(id => id?.startsWith('arch/')).sort()
+  }
+  const singleton = 'export const runs = ref([])\nexport function track () {\n  window.addEventListener(\'resize\', () => {})\n}\n'
+  const listener = 'export default defineNuxtPlugin(() => {\n  window.addEventListener(\'beforeunload\', () => {})\n})\n'
+
+  it('reports an app module, not its test file', async () => {
+    const cwd = project({ 'app/app.vue': '' })
+    expect(await lint(cwd, 'app/composables/useRuns.ts', singleton)).toEqual(['arch/no-module-mutable-state', 'arch/timer-needs-scope-dispose'])
+    expect(await lint(cwd, 'app/composables/useRuns.test.ts', singleton)).toEqual([])
+  })
+
+  it('exempts a declared client singleton', async () => {
+    const cwd = project({ 'app/app.vue': '' })
+    expect(await lint(cwd, 'app/composables/useRuns.ts', singleton, { clientSingletons: ['app/composables/useRuns.ts'] })).toEqual([])
+  })
+
+  it('keeps server code to module state: no select items, no component scope', async () => {
+    const cwd = project({ 'app/app.vue': '' })
+    expect(await lint(cwd, 'server/utils/options.ts', 'export const items = [{ value: \'\' }]\nsetTimeout(() => {}, 10)\n')).toEqual([])
+    expect(await lint(cwd, 'server/utils/session.ts', 'export const users = reactive({})\n')).toEqual(['arch/no-module-mutable-state'])
+  })
+
+  it('lets a plugin hold an app-lifetime listener, not a composable', async () => {
+    const cwd = project({ 'app/app.vue': '' })
+    expect(await lint(cwd, 'app/plugins/guard.client.ts', listener)).toEqual([])
+    expect(await lint(cwd, 'app/composables/useGuard.ts', listener)).toEqual(['arch/timer-needs-scope-dispose'])
+  })
+})

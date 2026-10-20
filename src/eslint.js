@@ -87,6 +87,8 @@ function restrictedImports(patterns) {
   }]
 }
 
+const TEST_FILES = ['**/*.{test,spec}.{ts,js}']
+
 const NAVIGATE_LITERAL = {
   selector: 'CallExpression[callee.name=\'navigateTo\'] > Literal.arguments:first-child[value=/^\\//]',
   message: '❌ navigateTo(\'/…\') string path. 💡 Bypasses i18n locale prefixes. 🛠 navigateTo(localePath({ name: \'…\' })).'
@@ -108,6 +110,7 @@ export function harness(options) {
   const server = rootGlobs('server', '**/*.{ts,js}')
   const shared = rootGlobs('shared', '**/*.{ts,js}')
   const appCode = app('**/*.{vue,ts,js}')
+  const appSide = [...appCode, ...rootGlobs('modules', '**/*.{vue,ts,js}')]
   const appVue = [...app('**/*.vue'), ...rootGlobs('modules', '**/*.vue')]
   const components = app('components/**/*.vue')
 
@@ -140,7 +143,7 @@ export function harness(options) {
     {
       // Test helpers mirror the signatures they exercise; table-driven tests branch on purpose.
       name: 'nuxt-harness/tests',
-      files: ['**/*.{test,spec}.{ts,js}'],
+      files: TEST_FILES,
       rules: { 'complexity': 'off', 'max-params': 'off' }
     },
 
@@ -235,9 +238,12 @@ export function harness(options) {
     },
 
     // ── SSR determinism: what a static gate can still decide ─────────────────
+    // Render-path rules: only app-side code renders. Tests are excluded throughout: they mock at
+    // module scope and drive fake timers on purpose, and none of it runs in SSR.
     {
       name: 'nuxt-harness/ssr-determinism',
-      files: [...appCode, ...server, ...shared, ...rootGlobs('modules', '**/*.{vue,ts,js}')],
+      files: appSide,
+      ignores: TEST_FILES,
       rules: {
         // The empty string is reserved by select-like components; it throws while hydrating.
         'arch/no-reserved-item-value': 'error',
@@ -247,13 +253,24 @@ export function harness(options) {
         'arch/no-locale-format-in-render': 'error',
         // Setup runs on the server: a top-level browser read throws or mismatches.
         'arch/no-browser-api-in-setup': 'error',
-        // Request data must not live in module scope (one instance per process).
-        'arch/no-module-mutable-state': 'error',
         // Parameterised requests need a key so hydration replays the right entry.
-        'arch/use-fetch-needs-key': 'warn',
-        // A timer without scope-aware cleanup outlives the component.
-        'arch/timer-needs-scope-dispose': 'warn'
+        'arch/use-fetch-needs-key': 'warn'
       }
+    },
+    {
+      // A timer without scope-aware cleanup outlives the component. A plugin and a declared client
+      // singleton live as long as the app, so an app-lifetime listener there is the point.
+      name: 'nuxt-harness/ssr-timers',
+      files: appSide,
+      ignores: [...TEST_FILES, ...app('plugins/**'), ...o.clientSingletons],
+      rules: { 'arch/timer-needs-scope-dispose': 'warn' }
+    },
+    {
+      // Request data must not live in module scope (one instance per process), app or server side.
+      name: 'nuxt-harness/ssr-module-state',
+      files: [...appSide, ...server, ...shared],
+      ignores: [...TEST_FILES, ...o.clientSingletons],
+      rules: { 'arch/no-module-mutable-state': 'error' }
     },
 
     // ── Design system: opt-in, configured by the app ─────────────────────────

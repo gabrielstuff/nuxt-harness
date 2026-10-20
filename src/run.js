@@ -339,7 +339,11 @@ export async function runGate(mode, { root, files, all, updateBaseline, config, 
 
   // An empty file set is not a pass: reporting success after reading nothing is how a green gate
   // hides a broken app. Say so, and let the caller opt in explicitly with --allow-empty.
-  if (staticMode && selected.length === 0 && !allowEmpty) {
+  // The exception is the default changed-files mode inside a repository: "nothing changed since
+  // the base" was checked against git, so it is a real answer (the Stop hook and `check:fast` on a
+  // clean branch rely on it). --all, file arguments and a missing repository still fail.
+  const nothingChanged = mode === 'fast' && !all && !files?.length && git(root, ['rev-parse', '--git-dir']) !== undefined
+  if (staticMode && selected.length === 0 && !allowEmpty && !nothingChanged) {
     return {
       tool: '@edumapper/nuxt-harness',
       version: VERSION,
